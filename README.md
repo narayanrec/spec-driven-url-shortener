@@ -44,7 +44,7 @@ curl -X POST http://localhost:3000/api/shorten \
 
 A successful response contains `code` and `shortUrl`. Invalid or unsupported destinations return HTTP 400 with a clear error. Only HTTP and HTTPS destinations are accepted.
 
-Visiting a known short URL returns HTTP 301 to its original destination. Unknown codes return HTTP 404.
+Visiting an active short URL returns HTTP 301 to its original destination and refreshes its activity time. A link remains active through the end of the UTC calendar day 90 days after it was created or last visited. Expired and unknown codes return HTTP 404. Expired records may be deleted later; they stop redirecting at the expiration cutoff.
 
 ## Tests
 

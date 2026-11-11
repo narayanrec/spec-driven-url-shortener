@@ -7,10 +7,10 @@ const { loadConfig } = require('../src/config');
 const { createAppServer } = require('../src/server');
 const { LinkStore } = require('../src/store');
 
-async function openServer(dataFile) {
+async function openServer(dataFile, { clock } = {}) {
   const config = loadConfig({ PORT: '3000', PUBLIC_BASE_URL: 'https://short.example', DATA_FILE: dataFile });
   const store = await new LinkStore(dataFile).init();
-  const server = createAppServer({ config, store });
+  const server = createAppServer({ config, store, clock });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -107,9 +107,33 @@ test('returns a permanent redirect for known codes and 404 for unknown codes', a
       const redirect = await fetch(`${baseUrl}/${code}`, { redirect: 'manual' });
       assert.equal(redirect.status, 301);
       assert.equal(redirect.headers.get('location'), 'https://example.com/original');
+      assert.equal(redirect.headers.get('cache-control'), 'no-store');
 
       const missing = await fetch(`${baseUrl}/unknown-code`, { redirect: 'manual' });
       assert.equal(missing.status, 404);
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+test('keeps a link active through the end of its 90th UTC calendar day and rejects it afterward', async () => {
+  await withTempDir(async (directory) => {
+    let now = new Date('2026-04-01T23:59:59.999Z');
+    const { server, baseUrl, store } = await openServer(path.join(directory, 'links.json'), { clock: () => now });
+    try {
+      const code = await store.create('https://example.com/active-at-cutoff');
+      store.links[code].lastAccessedAt = '2026-01-01T20:45:00.000Z';
+
+      const atCutoff = await fetch(`${baseUrl}/${code}`, { redirect: 'manual' });
+      assert.equal(atCutoff.status, 301);
+      assert.equal(store.getRecord(code).lastAccessedAt, now.toISOString());
+
+      store.links[code].lastAccessedAt = '2026-01-01T20:45:00.000Z';
+      now = new Date('2026-04-02T00:00:00.000Z');
+      const afterCutoff = await fetch(`${baseUrl}/${code}`, { redirect: 'manual' });
+      assert.equal(afterCutoff.status, 404);
+      assert.equal(store.getRecord(code).lastAccessedAt, '2026-01-01T20:45:00.000Z');
     } finally {
       await closeServer(server);
     }

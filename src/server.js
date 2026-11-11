@@ -83,16 +83,16 @@ function readBody(request) {
   });
 }
 
-function createAppServer({ config, store }) {
+function createAppServer({ config, store, clock = () => new Date() }) {
   return http.createServer((request, response) => {
-    handleRequest(request, response, { config, store }).catch(() => {
+    handleRequest(request, response, { config, store, clock }).catch(() => {
       if (!response.headersSent) sendJson(response, 500, { error: 'An internal server error occurred.' });
       else response.destroy();
     });
   });
 }
 
-async function handleRequest(request, response, { config, store }) {
+async function handleRequest(request, response, { config, store, clock }) {
   const pathname = new URL(request.url, 'http://localhost').pathname;
 
   if (request.method === 'GET' && pathname === '/') {
@@ -127,12 +127,12 @@ async function handleRequest(request, response, { config, store }) {
 
   if (request.method === 'GET' && /^\/[A-Za-z0-9_-]{1,64}$/.test(pathname)) {
     const code = pathname.slice(1);
-    const destination = store.get(code);
-    if (!destination) {
+    const link = await store.touch(code, clock());
+    if (!link) {
       sendHtml(response, 404, '<!doctype html><html lang="en"><title>Not found</title><h1>Short URL not found</h1></html>');
       return;
     }
-    response.writeHead(301, { location: destination, 'cache-control': 'public, max-age=86400' });
+    response.writeHead(301, { location: link.destination, 'cache-control': 'no-store' });
     response.end();
     return;
   }

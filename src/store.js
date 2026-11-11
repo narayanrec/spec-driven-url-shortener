@@ -2,6 +2,23 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomBytes } = require('node:crypto');
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const INACTIVITY_DAYS = 90;
+
+function expirationCutoff(lastAccessedAt) {
+  const lastActivityDate = new Date(lastAccessedAt);
+  const cutoffStart = Date.UTC(
+    lastActivityDate.getUTCFullYear(),
+    lastActivityDate.getUTCMonth(),
+    lastActivityDate.getUTCDate() + INACTIVITY_DAYS,
+  );
+  return cutoffStart + DAY_MS - 1;
+}
+
+function isExpired(lastAccessedAt, now = new Date()) {
+  return now.getTime() > expirationCutoff(lastAccessedAt);
+}
+
 class LinkStore {
   constructor(filePath, { codeFactory = () => randomBytes(6).toString('base64url') } = {}) {
     this.filePath = filePath;
@@ -25,16 +42,51 @@ class LinkStore {
     } catch {
       throw new Error(`Link store at ${this.filePath} contains invalid JSON.`);
     }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
-      || Object.entries(parsed).some(([code, destination]) => !code || typeof destination !== 'string')) {
-      throw new Error(`Link store at ${this.filePath} must be an object of short codes and destination URLs.`);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`Link store at ${this.filePath} must be an object of short codes and link records.`);
     }
-    this.links = Object.assign(Object.create(null), parsed);
+    const initializedAt = new Date().toISOString();
+    this.links = Object.create(null);
+    for (const [code, value] of Object.entries(parsed)) {
+      if (!code) throw new Error(`Link store at ${this.filePath} contains an invalid short code.`);
+      if (typeof value === 'string') {
+        this.links[code] = { destination: value, lastAccessedAt: initializedAt };
+      } else if (value && typeof value === 'object' && !Array.isArray(value)
+        && typeof value.destination === 'string'
+        && typeof value.lastAccessedAt === 'string'
+        && Number.isFinite(Date.parse(value.lastAccessedAt))) {
+        this.links[code] = { destination: value.destination, lastAccessedAt: value.lastAccessedAt };
+      } else {
+        throw new Error(`Link store at ${this.filePath} contains an invalid link record.`);
+      }
+    }
     return this;
   }
 
   get(code) {
+    return this.links[code]?.destination;
+  }
+
+  getRecord(code) {
     return this.links[code];
+  }
+
+  touch(code, accessedAt = new Date()) {
+    const operation = this.writeQueue.then(async () => {
+      const current = this.links[code];
+      if (!current) return undefined;
+      if (isExpired(current.lastAccessedAt, accessedAt)) return undefined;
+
+      const nextLinks = {
+        ...this.links,
+        [code]: { ...current, lastAccessedAt: accessedAt.toISOString() },
+      };
+      await this.persist(nextLinks);
+      this.links = Object.assign(Object.create(null), nextLinks);
+      return this.links[code];
+    });
+    this.writeQueue = operation.catch(() => {});
+    return operation;
   }
 
   create(destination) {
@@ -49,7 +101,7 @@ class LinkStore {
       }
       if (!code) throw new Error('Unable to generate a unique short code.');
 
-      const nextLinks = { ...this.links, [code]: destination };
+      const nextLinks = { ...this.links, [code]: { destination, lastAccessedAt: new Date().toISOString() } };
       await this.persist(nextLinks);
       this.links = Object.assign(Object.create(null), nextLinks);
       return code;
@@ -71,4 +123,4 @@ class LinkStore {
   }
 }
 
-module.exports = { LinkStore };
+module.exports = { LinkStore, expirationCutoff, isExpired };
